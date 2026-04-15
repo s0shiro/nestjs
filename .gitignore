@@ -4,6 +4,7 @@
 # Exception: Allow only the markdown file
 !NESTJS_CONCEPTS_GUIDE.md
 !NESTJS_CRASH_COURSE.md
+!NESTJS_INTERVIEW_QUESTIONS.md
 
 # Exception: Allow .gitignore itself
 !.gitignore
