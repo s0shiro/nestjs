@@ -1,0 +1,8 @@
+# Ignore everything by default
+*
+
+# Exception: Allow only the markdown file
+!NESTJS_CONCEPTS_GUIDE.md
+
+# Exception: Allow .gitignore itself
+!.gitignore
