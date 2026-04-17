@@ -425,33 +425,17 @@ curl -X DELETE http://localhost:3000/tasks/1
 
 ## Step 8) What to learn next
 
-Master these topics in this order (with dedicated beginner guides):
+Follow the comprehensive sequential guide:
 
-1. **Database Integration** → [NESTJS_DATABASE_INTEGRATION_GUIDE.md](./NESTJS_DATABASE_INTEGRATION_GUIDE.md)
-   - Persist data with TypeORM + PostgreSQL
-   - Entities, repositories, queries
-   - From in-memory arrays to real database
+**→ [NESTJS_NEXT_STEPS_COMPLETE_GUIDE.md](./NESTJS_NEXT_STEPS_COMPLETE_GUIDE.md)**
 
-2. **Configuration Management** → [NESTJS_CONFIGURATION_MANAGEMENT_GUIDE.md](./NESTJS_CONFIGURATION_MANAGEMENT_GUIDE.md)
-   - Environment variables and .env files
-   - Different configs per environment (dev/test/prod)
-   - Secrets management best practices
+This single guide walks you through:
+1. **Part 1: Database** - Add PostgreSQL + TypeORM persistence
+2. **Part 2: Configuration** - Use .env files and ConfigService
+3. **Part 3: Authentication** - Add JWT login and protected routes
+4. **Testing** - Complete end-to-end testing with curl
 
-3. **Authentication (JWT)** → [NESTJS_AUTHENTICATION_JWT_GUIDE.md](./NESTJS_AUTHENTICATION_JWT_GUIDE.md)
-   - User login and password hashing
-   - JWT token generation and validation
-   - Protected routes with Guards
-   - User identification per request
-
-4. **Exception Filters & Interceptors** (Coming soon)
-   - Global error handling
-   - Response transformation
-   - Request logging
-
-5. **Unit Tests & E2E Tests** (Coming soon)
-   - Testing services in isolation
-   - Testing full API endpoints
-   - Mocking dependencies
+By the end, you'll have a **production-ready API** with database, config, and authentication!
 
 ---
 
