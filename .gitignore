@@ -1,10 +1,13 @@
 # Ignore everything by default
 *
 
-# Exception: Allow only the markdown file
+# Exception: Allow markdown files
 !NESTJS_CONCEPTS_GUIDE.md
 !NESTJS_CRASH_COURSE.md
 !NESTJS_INTERVIEW_QUESTIONS.md
-
-# Exception: Allow .gitignore itself
+!NESTJS_END_TO_END_BEGINNER_WALKTHROUGH.md
+!NESTJS_DATABASE_INTEGRATION_GUIDE.md
+!NESTJS_CONFIGURATION_MANAGEMENT_GUIDE.md
+!NESTJS_AUTHENTICATION_JWT_GUIDE.md
+!implementation
 !.gitignore
