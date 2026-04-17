@@ -34,17 +34,41 @@ private tasks = [];  // Disappears when app restarts!
 
 ---
 
-## Step 1.1: Install Dependencies
+## Step 1.1: Install Prisma Dependencies
 
 ```bash
-npm install @nestjs/typeorm typeorm pg
+npm install @prisma/client
+npm install -D prisma
 ```
 
 ---
 
-## Step 1.2: Start PostgreSQL
+## Step 1.2: Initialize Prisma
 
-**Option A: Using Docker (recommended)**
+```bash
+npx prisma init
+```
+
+This creates:
+- `.env` file (for database URL)
+- `prisma/schema.prisma` (database schema)
+
+---
+
+## Step 1.3: Configure Database URL
+
+Update `.env`:
+
+```bash
+# Replace the DATABASE_URL line with:
+DATABASE_URL="postgresql://postgres:password@localhost:5432/nestjs_db"
+```
+
+Format: `postgresql://USER:PASSWORD@HOST:PORT/DATABASE`
+
+## Step 1.4: Start PostgreSQL (If Not Running)
+
+**Using Docker:**
 ```bash
 docker run --name postgres-nestjs \
   -e POSTGRES_PASSWORD=password \
@@ -53,101 +77,220 @@ docker run --name postgres-nestjs \
   -d postgres:15
 ```
 
-**Option B: Using local PostgreSQL**
-- Install from postgresql.org
-- Create database: `createdb nestjs_db`
-
-**Test connection:**
+**Or restart if already created:**
 ```bash
-psql -U postgres -h localhost -d nestjs_db
-# Type \q to exit
+docker start postgres-nestjs
 ```
 
 ---
 
-## Step 1.3: Create Task Entity
+## Step 1.5: Define Database Schema with Prisma
 
-The Task entity is like a **table definition** in the database.
+Edit `prisma/schema.prisma`:
 
-### `src/tasks/task.entity.ts` (NEW FILE)
+### `prisma/schema.prisma` (REPLACE)
 
-```typescript
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
 
-@Entity('tasks')  // Table name = 'tasks'
-export class Task {
-  @PrimaryGeneratedColumn()
-  id: number;  // Auto-increment primary key
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
 
-  @Column()
-  title: string;
+model Task {
+  id        Int     @id @default(autoincrement())
+  title     String
+  completed Boolean @default(false)
+  createdAt DateTime @default(now())
+}
 
-  @Column({ default: false })
-  completed: boolean;
-
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
-  createdAt: Date;
+model User {
+  id    Int     @id @default(autoincrement())
+  email String  @unique
+  password String
 }
 ```
 
-**Analogy:**
-- `@Entity('tasks')` = "Create a table called tasks"
-- `@PrimaryGeneratedColumn()` = "Auto-increment ID"
-- `@Column()` = "Add a column to the table"
+**Prisma schema explanation:**
+- `model Task` = Create a table called "tasks"
+- `id Int @id @default(autoincrement())` = Auto-increment ID (primary key)
+- `@unique` = This field must be unique
+- `@default(now())` = Use current timestamp
 
 ---
 
-## Step 1.4: Configure TypeORM in App Module
+## Step 1.6: Run Migration
 
-Update your app.module.ts:
+Create the database tables:
 
-### `src/app.module.ts` (MODIFY)
+```bash
+npx prisma migrate dev --name init
+```
+
+This:
+1. Creates migration file in `prisma/migrations/`
+2. Runs migration on PostgreSQL
+3. Generates Prisma Client
+
+**You'll see:**
+```
+✔ Generated Prisma Client
+✔ Created database tables
+Migration complete
+```
+
+## Step 1.7: Create Prisma Service (Database Connection)
+
+Create a service that exposes the Prisma client to other services.
+
+### `src/prisma/prisma.service.ts` (NEW FILE)
+
+```typescript
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+
+@Injectable()
+export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+  async onModuleInit() {
+    await this.$connect();
+  }
+
+  async onModuleDestroy() {
+    await this.$disconnect();
+  }
+}
+```
+
+### `src/prisma/prisma.module.ts` (NEW FILE)
 
 ```typescript
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { PrismaService } from './prisma.service';
+
+@Module({
+  providers: [PrismaService],
+  exports: [PrismaService],
+})
+export class PrismaModule {}
+```
+
+---
+
+## Step 1.8: Update App Module
+
+### `src/app.module.ts` (REPLACE - SIMPLIFIED!)
+
+```typescript
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { TasksModule } from './tasks/tasks.module';
-import { Task } from './tasks/task.entity';
+import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
   imports: [
-    // TypeORM Configuration
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: 'localhost',
-      port: 5432,
-      username: 'postgres',
-      password: 'password',
-      database: 'nestjs_db',
-      entities: [Task],  // Register entities here
-      synchronize: true, // Auto-create tables (dev only!)
-      logging: true,     // See SQL queries in console
+    ConfigModule.forRoot({
+      envFilePath: '.env',
+      isGlobal: true,
     }),
+    PrismaModule,
     TasksModule,
   ],
 })
 export class AppModule {}
 ```
 
-⚠️ **Important:** `synchronize: true` only for development! We'll change this later.
+Much simpler! Prisma handles the database connection, no need for TypeOrmModule.
 
 ---
 
-## Step 1.5: Update Tasks Module
+## Step 1.9: Update Tasks Service (Use Prisma)
 
-Register the Task entity as a repository so the service can use it.
+Replace your in-memory service with Prisma queries.
 
-### `src/tasks/tasks.module.ts` (MODIFY)
+### `src/tasks/tasks.service.ts` (REPLACE EVERYTHING)
+
+```typescript
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateTaskDto } from './dto/create-task.dto';
+import { UpdateTaskDto } from './dto/update-task.dto';
+
+@Injectable()
+export class TasksService {
+  constructor(private prisma: PrismaService) {}
+
+  // GET all tasks
+  findAll() {
+    return this.prisma.task.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  // GET one task by ID
+  async findOne(id: number) {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+    });
+
+    if (!task) {
+      throw new NotFoundException(`Task ${id} not found`);
+    }
+
+    return task;
+  }
+
+  // POST create new task
+  create(dto: CreateTaskDto) {
+    return this.prisma.task.create({
+      data: dto,
+    });
+  }
+
+  // PATCH update task
+  async update(id: number, dto: UpdateTaskDto) {
+    await this.findOne(id); // Verify exists
+
+    return this.prisma.task.update({
+      where: { id },
+      data: dto,
+    });
+  }
+
+  // DELETE task
+  async remove(id: number) {
+    await this.findOne(id); // Verify exists
+
+    await this.prisma.task.delete({
+      where: { id },
+    });
+  }
+}
+```
+
+**Prisma syntax:**
+- `prisma.task.findMany()` = Get all tasks
+- `prisma.task.findUnique()` = Get one by unique field
+- `prisma.task.create()` = Create new
+- `prisma.task.update()` = Update existing
+- `prisma.task.delete()` = Delete
+
+---
+
+## Step 1.10: Update Tasks Module
+
+### `src/tasks/tasks.module.ts` (REPLACE)
 
 ```typescript
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { TasksController } from './tasks.controller';
 import { TasksService } from './tasks.service';
-import { Task } from './task.entity';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Task])],  // NEW: Register Task repository
+  imports: [PrismaModule],
   controllers: [TasksController],
   providers: [TasksService],
 })
@@ -156,75 +299,7 @@ export class TasksModule {}
 
 ---
 
-## Step 1.6: Update Tasks Service (Use Repository)
-
-Replace your in-memory array with database queries.
-
-### `src/tasks/tasks.service.ts` (REPLACE EVERYTHING)
-
-```typescript
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Task } from './task.entity';
-import { CreateTaskDto } from './dto/create-task.dto';
-import { UpdateTaskDto } from './dto/update-task.dto';
-
-@Injectable()
-export class TasksService {
-  constructor(
-    @InjectRepository(Task)
-    private taskRepository: Repository<Task>,
-  ) {}
-
-  // GET all tasks
-  findAll(): Promise<Task[]> {
-    return this.taskRepository.find({
-      order: { createdAt: 'DESC' },
-    });
-  }
-
-  // GET one task by ID
-  async findOne(id: number): Promise<Task> {
-    const task = await this.taskRepository.findOne({ where: { id } });
-    if (!task) {
-      throw new NotFoundException(`Task ${id} not found`);
-    }
-    return task;
-  }
-
-  // POST create new task
-  create(dto: CreateTaskDto): Promise<Task> {
-    const task = this.taskRepository.create(dto);
-    return this.taskRepository.save(task);
-  }
-
-  // PATCH update task
-  async update(id: number, dto: UpdateTaskDto): Promise<Task> {
-    const task = await this.findOne(id);
-    Object.assign(task, dto);
-    return this.taskRepository.save(task);
-  }
-
-  // DELETE task
-  async remove(id: number): Promise<void> {
-    const result = await this.taskRepository.delete(id);
-    if (result.affected === 0) {
-      throw new NotFoundException(`Task ${id} not found`);
-    }
-  }
-}
-```
-
-**Key differences from in-memory:**
-- `this.taskRepository.find()` = Query database
-- `this.taskRepository.save(task)` = Persist to database
-- `this.taskRepository.delete(id)` = Remove from database
-- All methods return `Promise` (database queries are async)
-
----
-
-## Step 1.7: Test Database Integration
+## Step 1.11: Test Database Integration
 
 Start your server:
 ```bash
@@ -235,7 +310,7 @@ npm run start:dev
 ```bash
 curl -X POST http://localhost:3000/tasks \
   -H "Content-Type: application/json" \
-  -d '{"title":"Learn Database"}'
+  -d '{"title":"Learn Prisma"}'
 ```
 
 **Get all tasks:**
@@ -245,27 +320,20 @@ curl http://localhost:3000/tasks
 
 **Check database directly:**
 ```bash
-psql -U postgres -h localhost -d nestjs_db
-SELECT * FROM tasks;
+npx prisma studio
 ```
 
-**Expected output:** Task appears in both curl response AND database!
+This opens a GUI to view/edit database data!
 
 ---
 
 ## ✅ Part 1 Complete
 
 Your API now:
-- Stores tasks in a real database
+- Stores tasks in PostgreSQL via Prisma
 - Survives app restart
-- Can be queried from multiple clients
-- Shows SQL queries in console (because `logging: true`)
-
-**Problems solved:**
-- ✅ Data persistence
-- ❌ Secret password in code (we'll fix next)
-- ❌ Can't have separate dev/prod databases (we'll fix next)
-- ❌ Anyone can access the API (we'll fix later)
+- Can query data easily
+- Uses type-safe Prisma queries
 
 ---
 
@@ -273,19 +341,17 @@ Your API now:
 
 ## The Problem
 
-Right now, your database config is hard-coded:
-```typescript
-host: 'localhost',
-password: 'password',
-database: 'nestjs_db',
+Right now, your database URL is in `.env`:
+```bash
+DATABASE_URL="postgresql://postgres:password@localhost:5432/nestjs_db"
 ```
 
 **Problems:**
-1. Secret password in source code (security breach!)
-2. Same config for dev and production (doesn't work)
-3. Can't change config without rebuilding code
+1. Same DATABASE_URL for dev and production (doesn't work)
+2. Can't change config without restarting app
+3. Secret password might leak
 
-**Solution:** Use `.env` files (not committed to git).
+**Solution:** Use .env files with @nestjs/config
 
 ---
 
@@ -297,21 +363,17 @@ npm install @nestjs/config
 
 ---
 
-## Step 2.2: Create `.env` File
+## Step 2.2: Update `.env` File
 
-In your project root (same folder as package.json):
+You already have `.env` from Prisma init. Update it:
 
-### `.env` (NEW FILE - DO NOT COMMIT TO GIT!)
+### `.env` (MODIFY)
 
 ```bash
-# Database Configuration
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_USERNAME=postgres
-DATABASE_PASSWORD=password
-DATABASE_NAME=nestjs_db
+# Database (Prisma)
+DATABASE_URL="postgresql://postgres:password@localhost:5432/nestjs_db"
 
-# JWT (we'll use this in Part 3)
+# JWT (we'll use in Part 3)
 JWT_SECRET=your-super-long-random-secret-change-this-in-production
 JWT_EXPIRATION=1h
 
@@ -326,32 +388,19 @@ NODE_ENV=development
 
 Make sure `.env` is NOT committed:
 
-### `.gitignore` (MODIFY - ADD THIS LINE)
+### `.gitignore` (VERIFY - SHOULD ALREADY HAVE)
 
 ```bash
 .env
-.env.local
+.env*.local
+.prisma/
 ```
+
+Prisma init already adds these, but verify!
 
 ---
 
 ## Step 2.4: Create Config Files
-
-Organize config in separate, reusable files:
-
-### `src/config/database.config.ts` (NEW FILE)
-
-```typescript
-import { registerAs } from '@nestjs/config';
-
-export default registerAs('database', () => ({
-  host: process.env.DATABASE_HOST,
-  port: parseInt(process.env.DATABASE_PORT, 10) || 5432,
-  username: process.env.DATABASE_USERNAME,
-  password: process.env.DATABASE_PASSWORD,
-  database: process.env.DATABASE_NAME,
-}));
-```
 
 ### `src/config/app.config.ts` (NEW FILE)
 
@@ -386,56 +435,28 @@ export default registerAs('jwt', () => ({
 ```typescript
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { TasksModule } from './tasks/tasks.module';
-import { Task } from './tasks/task.entity';
-import databaseConfig from './config/database.config';
+import { PrismaModule } from './prisma/prisma.module';
 import appConfig from './config/app.config';
 import jwtConfig from './config/jwt.config';
 
 @Module({
   imports: [
-    // Load environment variables from .env
     ConfigModule.forRoot({
       envFilePath: '.env',
-      isGlobal: true,  // Available everywhere without importing
-      load: [databaseConfig, appConfig, jwtConfig],
+      isGlobal: true,
+      load: [appConfig, jwtConfig],
     }),
-
-    // TypeORM Configuration (now uses ConfigService)
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const dbConfig = configService.get('database');
-        return {
-          type: 'postgres',
-          host: dbConfig.host,
-          port: dbConfig.port,
-          username: dbConfig.username,
-          password: dbConfig.password,
-          database: dbConfig.database,
-          entities: [Task],
-          synchronize: configService.get('app.isDevelopment'),
-          logging: configService.get('app.isDevelopment'),
-        };
-      },
-    }),
-
+    PrismaModule,
     TasksModule,
   ],
 })
 export class AppModule {}
 ```
 
-**Key changes:**
-- `ConfigModule.forRoot()` loads `.env`
-- `TypeOrmModule.forRootAsync()` waits for config to load
-- Database config comes from `configService.get('database')`
-
 ---
 
-## Step 2.6: Update `main.ts` (Use App Port from Config)
+## Step 2.6: Update `main.ts` (Use Config for Port)
 
 ### `src/main.ts` (MODIFY)
 
@@ -470,28 +491,22 @@ npm run start:dev
 **You should see:**
 ```
 🚀 Application running on port 3000 (development)
-[TypeOrmModule] info  ...  // SQL queries logged because isDevelopment=true
 ```
 
 **Change config without restarting:**
 1. Edit `.env`: change `APP_PORT=3000` to `APP_PORT=3001`
-2. The app should restart automatically (because `npm run start:dev` watches files)
-3. It should now run on port 3001
-
-**Verify new port:**
-```bash
-curl http://localhost:3001/tasks
-```
+2. Server restarts automatically
+3. Run: `curl http://localhost:3001/tasks`
 
 ---
 
 ## ✅ Part 2 Complete
 
 Your API now:
-- Reads config from `.env` (not in code)
-- Can have separate `.env.development`, `.env.test`, `.env.production`
-- Doesn't expose secrets in source code
-- Can change config without rebuilding
+- Reads config from `.env`
+- Can have different `.env` files per environment
+- Secrets not in code
+- Port and other settings are configurable
 
 ---
 
@@ -504,7 +519,7 @@ Right now, **anyone can access your API**:
 curl http://localhost:3000/tasks  # Works for anyone!
 ```
 
-**Solution:** Users must log in and get a JWT token to access tasks.
+**Solution:** Users must log in and get a JWT token.
 
 ---
 
@@ -515,106 +530,105 @@ npm install @nestjs/jwt @nestjs/passport passport passport-jwt bcryptjs
 npm install -D @types/passport-jwt @types/bcryptjs
 ```
 
----
+## Step 3.2: Update Prisma Schema (Add User Model)
 
-## Step 3.2: Create User Entity
+Update `prisma/schema.prisma`:
 
-Users need to be stored in the database, just like tasks.
+### `prisma/schema.prisma` (MODIFY - ADD USER MODEL)
 
-### `src/users/user.entity.ts` (NEW FILE)
+```prisma
+generator client {
+  provider = "prisma-client-js"
+}
 
-```typescript
-import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
 
-@Entity('users')
-export class User {
-  @PrimaryGeneratedColumn()
-  id: number;
+model Task {
+  id        Int     @id @default(autoincrement())
+  title     String
+  completed Boolean @default(false)
+  createdAt DateTime @default(now())
+}
 
-  @Column({ unique: true })
-  email: string;
-
-  @Column()
-  password: string;  // Will be hashed, not stored as plain text
+model User {
+  id       Int     @id @default(autoincrement())
+  email    String  @unique
+  password String
 }
 ```
 
 ---
 
-## Step 3.3: Create Users Module & Service
+## Step 3.3: Run Migration
 
-### Generate files:
+Create the users table:
+
 ```bash
-nest g module users --no-spec
-nest g service users --no-spec
+npx prisma migrate dev --name add_users
 ```
 
-### `src/users/users.service.ts` (REPLACE)
+---
+
+## Step 3.4: Create Users Service
+
+### `src/users/users.service.ts` (NEW FILE)
 
 ```typescript
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { User } from './user.entity';
+import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
 
 @Injectable()
 export class UsersService {
-  constructor(
-    @InjectRepository(User)
-    private usersRepository: Repository<User>,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   // Find user by email
-  findByEmail(email: string): Promise<User | null> {
-    return this.usersRepository.findOne({ where: { email } });
+  findByEmail(email: string) {
+    return this.prisma.user.findUnique({
+      where: { email },
+    });
   }
 
   // Create new user with hashed password
-  async create(email: string, password: string): Promise<User> {
-    // Hash password (don't store plain text!)
+  async create(email: string, password: string) {
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    const user = this.usersRepository.create({
-      email,
-      password: hashedPassword,
+    return this.prisma.user.create({
+      data: {
+        email,
+        password: hashedPassword,
+      },
     });
-    return this.usersRepository.save(user);
   }
 
   // Compare password with hash
-  async validatePassword(user: User, password: string): Promise<boolean> {
+  async validatePassword(user: any, password: string): Promise<boolean> {
     return bcrypt.compare(password, user.password);
   }
 }
 ```
 
-### `src/users/users.module.ts` (REPLACE)
+### `src/users/users.module.ts` (NEW FILE)
 
 ```typescript
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { UsersService } from './users.service';
-import { User } from './user.entity';
+import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User])],
+  imports: [PrismaModule],
   providers: [UsersService],
-  exports: [UsersService],  // Export so AuthModule can use it
+  exports: [UsersService],
 })
 export class UsersModule {}
 ```
 
 ---
 
-## Step 3.4: Create Auth Module
-
-### Generate files:
-```bash
-nest g module auth --no-spec
-nest g controller auth --no-spec
-nest g service auth --no-spec
-```
+## Step 3.5: Create Auth Module
 
 ### Create DTOs
 
@@ -670,13 +684,11 @@ export class AuthService {
 
   // Register new user
   async register(registerDto: RegisterDto) {
-    // Check if user already exists
     const existingUser = await this.usersService.findByEmail(registerDto.email);
     if (existingUser) {
       throw new UnauthorizedException('User already exists');
     }
 
-    // Create new user
     const user = await this.usersService.create(
       registerDto.email,
       registerDto.password,
@@ -690,13 +702,11 @@ export class AuthService {
 
   // Login user and return JWT token
   async login(loginDto: LoginDto) {
-    // Find user by email
     const user = await this.usersService.findByEmail(loginDto.email);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Verify password
     const isPasswordValid = await this.usersService.validatePassword(
       user,
       loginDto.password,
@@ -705,16 +715,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    // Create JWT payload
     const payload = { sub: user.id, email: user.email };
 
-    // Sign and return token
     return {
       access_token: this.jwtService.sign(payload),
     };
   }
 
-  // Validate JWT token (used by strategy)
+  // Validate JWT token
   async validateToken(payload: any) {
     const user = await this.usersService.findByEmail(payload.email);
     if (!user) {
@@ -769,7 +777,7 @@ export class JwtGuard extends AuthGuard('jwt') {}
 
 ### Auth Controller
 
-### `src/auth/auth.controller.ts` (REPLACE)
+### `src/auth/auth.controller.ts` (NEW FILE)
 
 ```typescript
 import { Controller, Post, Body, UseGuards, Get, Request } from '@nestjs/common';
@@ -792,34 +800,30 @@ export class AuthController {
     return this.authService.login(loginDto);
   }
 
-  // Protected route - only authenticated users can access
   @UseGuards(JwtGuard)
   @Get('me')
   getProfile(@Request() req) {
-    return req.user;  // req.user is set by JwtGuard
+    return req.user;
   }
 }
 ```
 
 ### Auth Module
 
-### `src/auth/auth.module.ts` (REPLACE)
+### `src/auth/auth.module.ts` (NEW FILE)
 
 ```typescript
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { UsersModule } from '../users/users.module';
-import { User } from '../users/user.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User]),
     UsersModule,
     PassportModule,
     JwtModule.registerAsync({
@@ -842,20 +846,17 @@ export class AuthModule {}
 
 ---
 
-## Step 3.5: Update App Module (Add Auth & Users)
+## Step 3.6: Update App Module (Add Auth & Users)
 
-### `src/app.module.ts` (MODIFY - ADD IMPORTS)
+### `src/app.module.ts` (MODIFY)
 
 ```typescript
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { TasksModule } from './tasks/tasks.module';
+import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
-import { Task } from './tasks/task.entity';
-import { User } from './users/user.entity';
-import databaseConfig from './config/database.config';
 import appConfig from './config/app.config';
 import jwtConfig from './config/jwt.config';
 
@@ -864,30 +865,11 @@ import jwtConfig from './config/jwt.config';
     ConfigModule.forRoot({
       envFilePath: '.env',
       isGlobal: true,
-      load: [databaseConfig, appConfig, jwtConfig],
+      load: [appConfig, jwtConfig],
     }),
-
-    TypeOrmModule.forRootAsync({
-      imports: [ConfigModule],
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => {
-        const dbConfig = configService.get('database');
-        return {
-          type: 'postgres',
-          host: dbConfig.host,
-          port: dbConfig.port,
-          username: dbConfig.username,
-          password: dbConfig.password,
-          database: dbConfig.database,
-          entities: [Task, User],  // ADD User entity
-          synchronize: configService.get('app.isDevelopment'),
-          logging: configService.get('app.isDevelopment'),
-        };
-      },
-    }),
-
-    AuthModule,   // ADD
-    UsersModule,  // ADD
+    PrismaModule,
+    AuthModule,
+    UsersModule,
     TasksModule,
   ],
 })
@@ -896,9 +878,7 @@ export class AppModule {}
 
 ---
 
-## Step 3.6: Protect Tasks Routes with Authentication
-
-Now only authenticated users can access tasks!
+## Step 3.7: Protect Tasks Routes
 
 ### `src/tasks/tasks.controller.ts` (MODIFY)
 
